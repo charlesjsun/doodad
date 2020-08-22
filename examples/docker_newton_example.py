@@ -31,7 +31,7 @@ mounts = [
     mount.MountLocal(local_dir='~/data/%s' % MY_USERNAME, mount_point=OUTPUT_DIR, output=True),
 ]
 
-pd.launch_python(
+dd.launch_python(
     target='path/to/script.py',  # point to a target script (absolute path).
     mode=mode_ssh,
     mount_points=mounts,

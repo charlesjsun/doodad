@@ -82,15 +82,15 @@ LOCAL = Local()
 
 
 class DockerMode(LaunchMode):
-    def __init__(self, image='ubuntu:16.04', gpu=False):
+    def __init__(self, image='ubuntu:16.04', name_prefix='', gpu=False):
         super(DockerMode, self).__init__()
         self.docker_image = image
-        self.docker_name = uuid.uuid4()
+        self.docker_name = name_prefix + str(uuid.uuid4())
         self.gpu = gpu
 
     def get_docker_cmd(self, main_cmd, extra_args='', use_tty=True,
                        verbose=True, pythonpath=None, pre_cmd=None,
-                       post_cmd=None,
+                       post_cmd=None, detach=False,
                        checkpoint=False, no_root=False,
                        use_docker_generated_name=False):
         cmd_list = utils.CommandBuilder()
@@ -124,7 +124,11 @@ class DockerMode(LaunchMode):
         if checkpoint:
             # set up checkpoint stuff
             use_tty = False
-            extra_args += ' -d '  # detach is optional
+        
+        if detach:
+            extra_args += ' -d '
+
+        extra_args += ' --rm ' # removes after finish
 
         if self.gpu:
             docker_run = 'docker run --gpus all'
@@ -154,7 +158,10 @@ class LocalDocker(DockerMode):
             if isinstance(mount, MountLocal):
                 # mount_pnt = os.path.expanduser(mount.mount_point)
                 mount_pnt = mount.mount_dir()
-                mnt_args += ' -v %s:%s' % (mount.local_dir, mount_pnt)
+                if mount.output:
+                    mnt_args += ' -v %s:%s' % (mount.local_dir, mount_pnt)
+                else:
+                    mnt_args += ' -v %s:%s' % (mount.local_dir, mount_pnt)
                 utils.call_and_wait('mkdir -p %s' % mount.local_dir)
                 if mount.pythonpath:
                     py_path.append(mount_pnt)
@@ -171,7 +178,7 @@ class LocalDocker(DockerMode):
 class SSHDocker(DockerMode):
     TMP_DIR = '~/.remote_tmp'
 
-    def __init__(self, credentials=None, tmp_dir=None, **docker_args):
+    def __init__(self, credentials=None, tmp_dir=None, detach=False, **docker_args):
         if tmp_dir is None:
             tmp_dir = SSHDocker.TMP_DIR
         super(SSHDocker, self).__init__(**docker_args)
@@ -179,6 +186,7 @@ class SSHDocker(DockerMode):
         self.run_id = 'run_%s' % uuid.uuid4()
         self.tmp_dir = os.path.join(tmp_dir, self.run_id)
         self.checkpoint = None
+        self.detach = detach
 
     def launch_command(self, main_cmd, mount_points=None, dry=False,
                        verbose=False):
@@ -190,6 +198,9 @@ class SSHDocker(DockerMode):
         tmp_dir_cmd = 'mkdir -p %s' % self.tmp_dir
         tmp_dir_cmd = self.credentials.get_ssh_bash_cmd(tmp_dir_cmd)
         utils.call_and_wait(tmp_dir_cmd, dry=dry, verbose=verbose)
+
+        # remove_tmp_dir_cmd = 'rm -r %s' % self.tmp_dir
+        # remote_cleanup_commands.append(remove_tmp_dir_cmd)
 
         # SCP Code over
         for mount in mount_points:
@@ -207,19 +218,20 @@ class SSHDocker(DockerMode):
                                                                remote_tar)
                         utils.call_and_wait(scp_cmd, dry=dry, verbose=verbose)
                     remote_cmds.append('mkdir -p %s' % remote_mnt_dir)
-                    unzip_cmd = 'tar -xf %s -C %s' % (
-                    remote_tar, remote_mnt_dir)
+                    unzip_cmd = 'tar -xf %s -C %s' % (remote_tar, remote_mnt_dir)
                     remote_cmds.append(unzip_cmd)
+                    remove_tar_cmd = 'rm %s' % remote_tar
+                    remote_cmds.append(remove_tar_cmd)
                     mount_point = mount.mount_dir()
                     mnt_args += ' -v %s:%s' % (os.path.join(remote_mnt_dir,
                                                             os.path.basename(
-                                                                mount.mount_point)),
+                                                                mount.local_dir)),
                                                mount_point)
                 else:
                     # remote_cmds.append('mkdir -p %s' % mount.mount_point)
                     remote_cmds.append('mkdir -p %s' % mount.local_dir_raw)
                     mnt_args += ' -v %s:%s' % (
-                    mount.local_dir_raw, mount.mount_point)
+                        mount.local_dir_raw, mount.mount_point)
 
                 if mount.pythonpath:
                     py_path.append(mount_point)
@@ -230,6 +242,7 @@ class SSHDocker(DockerMode):
             raise NotImplementedError()
         else:
             docker_cmd = self.get_docker_cmd(main_cmd, use_tty=False,
+                                             detach=self.detach,
                                              extra_args=mnt_args,
                                              pythonpath=py_path)
 
@@ -389,6 +402,7 @@ class EC2SpotDocker(DockerMode):
             aws_region=self.s3_bucket_region))
         sio.write("""
             curl "https://s3.amazonaws.com/aws-cli/awscli-bundle.zip" -o "awscli-bundle.zip"
+            sudo apt-get install unzip
             unzip awscli-bundle.zip
             sudo ./awscli-bundle/install -i /usr/local/aws -b /usr/local/bin/aws
         """)

@@ -23,6 +23,7 @@ class Mount(object):
     def __init__(self, mount_point=None, pythonpath=False, output=False):
         self.pythonpath = pythonpath
         self.read_only = not output
+        self.output = output
         self.set_mount(mount_point)
         self.path_on_remote = None
         self.local_file_hash = None
@@ -37,7 +38,7 @@ class Mount(object):
 class MountLocal(Mount):
     def __init__(self, local_dir, mount_point=None, cleanup=True,
                 filter_ext=('.pyc', '.log', '.git', '.mp4', '.idea'),
-                filter_dir=('data',),
+                filter_dir=('data', '.git',),
                 **kwargs):
         super(MountLocal, self).__init__(mount_point=mount_point, **kwargs)
         self.local_dir = os.path.realpath(os.path.expanduser(local_dir))
@@ -62,7 +63,7 @@ class MountLocal(Mount):
         """
         assert self.read_only
         def filter_func(tar_info):
-            filt = any([tar_info.name.endswith(ext) for ext in self.filter_ext]) or any([ tar_info.name.endswith('/'+ext) for ext in self.filter_dir])
+            filt = any([tar_info.name.endswith(ext) for ext in self.filter_ext]) or any([tar_info.name.endswith('/'+ext) for ext in self.filter_dir])
             if filt:
                 return None
             return tar_info
@@ -78,7 +79,7 @@ class MountLocal(Mount):
         return 'MountLocal@%s'%self.local_dir
 
     def mount_dir(self):
-         return os.path.join('/mounts', self.mount_point.replace('~/',''))
+        return self.mount_point.replace('~/','/root/')
 
 
 class MountGitRepo(Mount):
