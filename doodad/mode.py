@@ -944,6 +944,123 @@ class LocalSingularity(SingularityMode):
                             skip_wait=self.skip_wait)
 
 
+class SSHSingularity(LaunchMode):
+    TMP_DIR = '~/.remote_tmp'
+
+    def __init__(self, image, name_prefix='', gpu=False, credentials=None, tmp_dir=None):
+        if tmp_dir is None:
+            tmp_dir = SSHDocker.TMP_DIR
+        super(SSHSingularity, self).__init__()
+        self.singularity_image = image
+        self.gpu = gpu
+        self.credentials = credentials
+        self.run_id = 'run_%s' % uuid.uuid4()
+        self.singularity_name = name_prefix + self.run_id
+        self.tmp_dir = os.path.join(tmp_dir, self.run_id)
+
+    def get_singularity_cmd(self, main_cmd, extra_args='',
+                       verbose=True, pythonpath=None, pre_cmd=None,
+                       post_cmd=None):
+        cmd_list = utils.CommandBuilder()
+        if pre_cmd:
+            cmd_list.extend(pre_cmd)
+
+        if verbose:
+            if self.gpu:
+                cmd_list.append('echo \"Running in singularity with gpu\"')
+            else:
+                cmd_list.append('echo \"Running in singularity\"')
+        if pythonpath:
+            cmd_list.append(
+                'export PYTHONPATH=$PYTHONPATH:%s' % (':'.join(pythonpath)))
+
+        cmd_list.append(main_cmd)
+        if post_cmd:
+            cmd_list.extend(post_cmd)
+
+        extra_args += ' -c '
+        extra_args += ' --no-home '
+        extra_args += ' --cleanenv '
+        extra_args += ' --writable-tmpfs '
+
+        if self.gpu:
+            extra_args += ' --nv '
+        
+        singularity_prefix = 'singularity instance start %s %s %s /bin/bash -c ' % (
+            extra_args, self.singularity_image, self.singularity_name)
+        
+        main_cmd = cmd_list.to_string()
+        full_cmd = singularity_prefix + ("\'%s\'" % main_cmd)
+        return full_cmd
+
+    def launch_command(self, main_cmd, mount_points=None, dry=False,
+                       verbose=False):
+        py_path = []
+        remote_cmds = utils.CommandBuilder()
+        remote_cleanup_commands = utils.CommandBuilder()
+        mnt_args = ''
+
+        tmp_dir_cmd = 'mkdir -p %s' % self.tmp_dir
+        tmp_dir_cmd = self.credentials.get_ssh_bash_cmd(tmp_dir_cmd)
+        utils.call_and_wait(tmp_dir_cmd, dry=dry, verbose=verbose)
+
+        # remove_tmp_dir_cmd = 'rm -r %s' % self.tmp_dir
+        # remote_cleanup_commands.append(remove_tmp_dir_cmd)
+
+        # SCP Code over
+        for mount in mount_points:
+            if isinstance(mount, MountLocal):
+                if mount.read_only:
+                    with mount.gzip() as gzip_file:
+                        # scp
+                        base_name = os.path.basename(gzip_file)
+                        # file_hash = hash_file(gzip_path)  # TODO: store all code in a special "caches" folder
+                        remote_mnt_dir = os.path.join(self.tmp_dir,
+                                                      os.path.splitext(
+                                                          base_name)[0])
+                        remote_tar = os.path.join(self.tmp_dir, base_name)
+                        scp_cmd = self.credentials.get_scp_cmd(gzip_file,
+                                                               remote_tar)
+                        utils.call_and_wait(scp_cmd, dry=dry, verbose=verbose)
+                    remote_cmds.append('mkdir -p %s' % remote_mnt_dir)
+                    unzip_cmd = 'tar -xf %s -C %s' % (remote_tar, remote_mnt_dir)
+                    remote_cmds.append(unzip_cmd)
+                    remove_tar_cmd = 'rm %s' % remote_tar
+                    remote_cmds.append(remove_tar_cmd)
+                    mount_point = mount.mount_dir()
+                    mnt_args += ' -B %s:%s' % (os.path.join(remote_mnt_dir,
+                                                            os.path.basename(
+                                                                mount.local_dir)),
+                                               mount_point)
+                else:
+                    # remote_cmds.append('mkdir -p %s' % mount.mount_point)
+                    remote_cmds.append('mkdir -p %s' % mount.local_dir_raw)
+                    mnt_args += ' -B %s:%s' % (
+                        mount.local_dir_raw, mount.mount_point)
+
+                if mount.pythonpath:
+                    py_path.append(mount_point)
+            else:
+                raise NotImplementedError()
+
+        singularity_cmd = self.get_singularity_cmd(main_cmd,
+                                            extra_args=mnt_args,
+                                            pythonpath=py_path)
+
+        remote_cmds.append(singularity_cmd)
+        remote_cmds.extend(remote_cleanup_commands)
+
+        with tempfile.NamedTemporaryFile('w+', suffix='.sh') as ntf:
+            for cmd in remote_cmds:
+                if verbose:
+                    ntf.write(
+                        'echo "%s$ %s"\n' % (self.credentials.user_host, cmd))
+                ntf.write(cmd + '\n')
+            ntf.seek(0)
+            ssh_cmd = self.credentials.get_ssh_script_cmd(ntf.name)
+
+            utils.call_and_wait(ssh_cmd, dry=dry, verbose=verbose)
+
 class BrcHighThroughputMode(SingularityMode):
     """
     Create or add to a script to run a bunch of slurm jobs.
