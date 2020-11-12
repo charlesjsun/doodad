@@ -947,7 +947,7 @@ class LocalSingularity(SingularityMode):
 class SSHSingularity(LaunchMode):
     TMP_DIR = '~/.remote_tmp'
 
-    def __init__(self, image, name_prefix='', gpu=False, credentials=None, tmp_dir=None):
+    def __init__(self, image, name_prefix='', gpu=False, credentials=None, tmp_dir=None, singularity_bin='singularity'):
         if tmp_dir is None:
             tmp_dir = SSHDocker.TMP_DIR
         super(SSHSingularity, self).__init__()
@@ -957,6 +957,7 @@ class SSHSingularity(LaunchMode):
         self.run_id = 'run_%s' % uuid.uuid4()
         self.singularity_name = name_prefix + self.run_id
         self.tmp_dir = os.path.join(tmp_dir, self.run_id)
+        self.singularity_bin = singularity_bin
 
     def get_singularity_cmd(self, main_cmd, extra_args='',
                        verbose=True, pythonpath=None, pre_cmd=None,
@@ -985,8 +986,8 @@ class SSHSingularity(LaunchMode):
 
         if self.gpu:
             extra_args += ' --nv '
-        
-        singularity_prefix = 'singularity instance start %s %s %s /bin/bash -c ' % (
+
+        singularity_prefix = self.singularity_bin + ' instance start %s %s %s /bin/bash -c ' % (
             extra_args, self.singularity_image, self.singularity_name)
         
         main_cmd = cmd_list.to_string()
